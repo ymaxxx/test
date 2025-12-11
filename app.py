@@ -246,6 +246,7 @@ with gr.Blocks(title="手書き数字認識") as interface:
             return gr.update()
 
     with gr.Row():
+        
         with gr.Column(scale=2):
             gr.Markdown("### 数字識別")
             # ブラシ初期サイズ8のスケッチパッド
