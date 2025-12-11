@@ -9,11 +9,9 @@ from PIL import Image
 import gradio as gr
 import numpy as np
 import io
-from PIL import ImageOps
 import sys
-from contextlib import redirect_stdout
 
-# ---------- 模型定义 ----------
+#  --------- モデル定義 ----------
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
@@ -31,15 +29,15 @@ class CNN(nn.Module):
         x = self.fc2(x)                # [batch, 10]
         return x
 
-# ---------- 模型训练 ----------
+#  --------- モデル訓練 ----------
 def train_model(model_path="model.pth", epochs=1, capture_log=False):
-    """训练模型，可选择捕获日志"""
+    """モデルを訓練し、ログをキャプチャすることも可能"""
     if capture_log:
         log_capture = io.StringIO()
         stdout_backup = sys.stdout
         sys.stdout = log_capture
     
-    print(f"开始训练模型，训练轮数：{epochs}...")
+    print(f"モデル訓練開始、エポック数：{epochs}...")
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -65,7 +63,7 @@ def train_model(model_path="model.pth", epochs=1, capture_log=False):
         print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
     
     torch.save(model.state_dict(), model_path)
-    print(f"模型训练完成并保存为 {model_path}")
+    print(f"モデル訓練完了し、{model_path} に保存しました。")
     
     if capture_log:
         sys.stdout = stdout_backup
@@ -79,7 +77,7 @@ def load_model(model_path="model.pth"):
     model = CNN()
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
-        print("已加载已有模型。")
+        print("既存のモデルを読み込みました。")
     else:
         model = train_model(model_path)
     model.eval()
@@ -88,36 +86,24 @@ def load_model(model_path="model.pth"):
 model = load_model()
 
 # ---------- 图像预处理 ----------
-transform_input = transforms.Compose([
-    transforms.Resize((28, 28)),
-    transforms.Grayscale(),
-    transforms.ToTensor(),
-    transforms.Normalize((0.1307,), (0.3081,))
-])
-
-# 用于将已经是 28x28 灰度 PIL 图转换为 tensor + normalize（避免重复 resize）
 transform_tensor = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.1307,), (0.3081,))
 ])
 
-
-def preprocess_image(pil_img):
-    # delegate to the options-based preprocessing with default options
-    return preprocess_with_options(pil_img, invert=True, binarize=True, crop=True, scale20=True, center_mass=True)
-
-
 def preprocess_with_options(pil_img, invert=True, binarize=True, crop=True, scale20=True, center_mass=True):
-    """同 preprocess_image，但每一步可开关，便于做消融实验。
-    返回 (tensor, display_img)
-    步骤对应含义：
-      - invert: 自动反相背景
-      - binarize: 二值化（阈值分割）
-      - crop: 裁剪到前景 bbox
-      - scale20: 把裁剪结果等比缩放到 20x(<=20) 并居中到28x28；否则直接缩放到28x28
-      - center_mass: 质心居中平移
+    """preprocess_imageと同様だが、各ステップをオンオフ可能で、アブレーション実験に便利。
+    (tensor, display_img)を返す
+    ステップの意味：
+      - invert: 背景を自動反転
+      - binarize: 二値化（閾値分割）
+      - crop: 前景のバウンディングボックスにトリミング
+      - scale20: トリミング結果をアスペクト比を保って20x(<=20)にリサイズし、28x28に中央配置；そうでなければ直接28x28にリサイズ
+      - center_mass: 重心を中央に平行移動
     """
+    # グレースケール化 8-bit グレースケール画像
     img = pil_img.convert('L')
+    # numpy 配列 uint8 型（符号なし 8 ビット整数）に変換
     arr = np.array(img).astype(np.uint8)
 
     # invert
@@ -171,7 +157,7 @@ def preprocess_with_options(pil_img, invert=True, binarize=True, crop=True, scal
         left = (28 - new_w) // 2
         new_img.paste(resized, (left, top))
     else:
-        # 直接缩放到28x28
+        # 28x28にリサイズ
         try:
             new_img = Image.fromarray(crop_arr).resize((28, 28), Image.LANCZOS).convert('L')
         except Exception:
@@ -198,124 +184,32 @@ def preprocess_with_options(pil_img, invert=True, binarize=True, crop=True, scal
     tensor = transform_tensor(new_img).unsqueeze(0)
     return tensor, new_img
 
-
-def ablation_predict(image):
-    """对传入的画布/图像做消融：逐个关闭 preprocess 步骤并返回每种设置的预测与展示图。
-    返回 dict: {label: (probs_dict, display_img)}
-    可用于比较哪些预处理是关键。
-    """
-    # 统一把 sketchpad dict 转为 PIL image
-    if isinstance(image, dict):
-        img_data = image.get('composite') if image.get('composite') is not None else image.get('background')
-        if img_data is None:
-            raise ValueError('no image in sketchpad dict')
-        pil = Image.fromarray(img_data)
-    elif isinstance(image, Image.Image):
-        pil = image
-    else:
-        pil = Image.fromarray(image)
-
-    variants = {
-        'all_steps': dict(invert=True, binarize=True, crop=True, scale20=True, center_mass=True),
-        'no_invert': dict(invert=False, binarize=True, crop=True, scale20=True, center_mass=True),
-        'no_binarize': dict(invert=True, binarize=False, crop=True, scale20=True, center_mass=True),
-        'no_crop': dict(invert=True, binarize=True, crop=False, scale20=True, center_mass=True),
-        'no_scale20': dict(invert=True, binarize=True, crop=True, scale20=False, center_mass=True),
-        'no_center_mass': dict(invert=True, binarize=True, crop=True, scale20=True, center_mass=False),
-    }
-
-    results = {}
-    for name, opts in variants.items():
-        tensor, disp = preprocess_with_options(pil, **opts)
-        with torch.no_grad():
-            out = model(tensor)
-            probs = torch.softmax(out, dim=1)[0]
-        results[name] = ({str(i): float(probs[i]) for i in range(10)}, disp)
-
-    return results
-
-# ---------- 预测函数 ----------
-def predict(image):
-    # Sketchpad 返回字典格式，需要提取 'composite' 或 'background'
-    if isinstance(image, dict):
-        # 优先使用 composite（合成层），其次使用 background
-        img_data = image.get('composite') if image.get('composite') is not None else image.get('background')
-        if img_data is None:
-            return {str(i): 0.0 for i in range(10)}
-        image = img_data
-    
-    # 处理 PIL Image 对象
-    if not isinstance(image, Image.Image):
-        image = Image.fromarray(image)
-
-    # 使用稳健预处理，返回 tensor 和展示图
-    tensor, display_img = preprocess_image(image)
-
-    with torch.no_grad():
-        output = model(tensor)
-        probs = torch.softmax(output, dim=1)[0]
-
-    # 返回概率字典和用于展示的 PIL 图像
-    return ({str(i): float(probs[i]) for i in range(10)}, display_img)
-
-
+#  --------- 予測関数 ----------
 def predict_with_options(image, invert=True, binarize=True, crop=True, scale20=True, center_mass=True):
-    """Wrapper for UI: 使用可选预处理步骤进行预测并返回 (probs_dict, display_img)。"""
-    # 统一把 sketchpad dict 转为 PIL image，支持多种输入类型
-    def to_pil(obj):
-        if isinstance(obj, Image.Image):
-            return obj
-        if isinstance(obj, np.ndarray):
-            try:
-                return Image.fromarray(obj)
-            except Exception:
-                # sometimes shape or dtype unexpected
-                return Image.fromarray(obj.astype('uint8'))
-        if isinstance(obj, bytes):
-            from io import BytesIO
-            try:
-                return Image.open(BytesIO(obj))
-            except Exception:
-                return None
-        if isinstance(obj, str):
-            # filepath or base64? try open file
-            if os.path.exists(obj):
-                try:
-                    return Image.open(obj)
-                except Exception:
-                    return None
-        return None
+    """UI用ラッパー: オプションの前処理ステップを使って予測し、(probs_dict, display_img)を返す。"""
 
-    if isinstance(image, dict):
-        img_data = image.get('composite') if image.get('composite') is not None else image.get('background')
-        if img_data is None:
-            return {str(i): 0.0 for i in range(10)}, Image.new('L', (28, 28), color=0)
-        pil = to_pil(img_data)
-    else:
-        pil = to_pil(image)
-
-    if pil is None:
-        # 无法解析输入，返回空白图和零概率，避免 UI 崩溃
+    img_data = image.get('composite')
+    if img_data is None:
         return {str(i): 0.0 for i in range(10)}, Image.new('L', (28, 28), color=0)
 
-    tensor, display_img = preprocess_with_options(pil, invert=invert, binarize=binarize, crop=crop, scale20=scale20, center_mass=center_mass)
+    tensor, display_img = preprocess_with_options(img_data, invert=invert, binarize=binarize, crop=crop, scale20=scale20, center_mass=center_mass)
     with torch.no_grad():
         out = model(tensor)
         probs = torch.softmax(out, dim=1)[0]
     return {str(i): float(probs[i]) for i in range(10)}, display_img
 
-# ---------- 重新训练函数 ----------
+#  --------- モデル再訓練関数 ----------
 def retrain_model(epochs):
     global model
-    print(f"\n开始重新训练模型，Epoch: {epochs}")
+    print(f"\nモデル再訓練開始、エポック数: {epochs}")
     model, log_output = train_model("model.pth", epochs=epochs, capture_log=True)
     model = load_model()
     return log_output
 
 
-# ---------- 评估函数 ----------
+#  --------- 評価関数 ----------
 def evaluate_model(model_obj=None, batch_size=256):
-    """在 MNIST 测试集上评估模型，返回准确率和简单报告字符串"""
+    """MNISTテストセットでモデルを評価し、精度と簡単なレポート文字列を返す"""
     model_eval = model_obj if model_obj is not None else load_model()
     transform_test = transforms.Compose([
         transforms.ToTensor(),
@@ -335,15 +229,16 @@ def evaluate_model(model_obj=None, batch_size=256):
             total += data.size(0)
 
     acc = correct / total if total > 0 else 0.0
-    report = f"测试集准确率: {acc*100:.2f}% ({correct}/{total})"
-    return acc, report
+    report = f"テストセットの正確度: {acc*100:.2f}% ({correct}/{total})"
+    # テストセットの正確度レポート文字列を返す
+    return report
 
-# ---------- Gradio 界面 ----------
-with gr.Blocks(title="手写数字识别") as interface:
-    gr.Markdown("# 🎨 手写数字识别系统")
-    gr.Markdown("在下方画布上绘制数字（0～9），模型会实时识别。你也可以重新训练模型来提高准确率。")
+#  --------- Gradio 界面 ----------
+with gr.Blocks(title="手書き数字認識") as interface:
+    gr.Markdown("# 🎨 手書き数字識別システム")
+    gr.Markdown("下のキャンバスに数字（0～9）を描くと、モデルがリアルタイムで認識します。モデルの精度を向上させるために再訓練も可能です。")
     
-    # 用于动态更新画笔的回调
+    #  ブラシサイズを動的に更新するためのコールバック
     def update_brush(size):
         try:
             return gr.update(brush=gr.Brush(default_size=int(size), default_color="#000000", colors=["#000000"], color_mode='fixed'))
@@ -352,51 +247,58 @@ with gr.Blocks(title="手写数字识别") as interface:
 
     with gr.Row():
         with gr.Column(scale=2):
-            gr.Markdown("### 数字识别")
-            # 初始画笔大小设为 8（较细）
+            gr.Markdown("### 数字識別")
+            # ブラシ初期サイズ8のスケッチパッド
             canvas = gr.Sketchpad(
                 canvas_size=(280, 280),
                 image_mode="L",
-                label="绘制数字",
+                label="数字を描くキャンバス",
                 type="pil",
                 brush=gr.Brush(default_size=8, default_color="#000000", colors=["#000000"], color_mode='fixed')
             )
-            # 画笔大小控制器
-            brush_size = gr.Slider(minimum=1, maximum=40, value=8, step=1, label="画笔大小")
-            # 预处理选项
-            invert_cb = gr.Checkbox(value=True, label="自动反相")
-            binarize_cb = gr.Checkbox(value=True, label="二值化")
-            crop_cb = gr.Checkbox(value=True, label="裁剪到前景")
-            scale20_cb = gr.Checkbox(value=True, label="缩放到20并居中")
-            center_mass_cb = gr.Checkbox(value=True, label="质心居中")
-            predict_btn = gr.Button("识别", variant="primary", scale=1)
-            output = gr.Label(label="识别结果")
-            processed_img_out = gr.Image(type="pil", label="模型输入 (28x28)", interactive=False)
-            
+            # ブラシサイズコントローラー
+            brush_size = gr.Slider(minimum=1, maximum=40, value=8, step=1, label="ブラシサイズ")
+            # 前処理オプションおよびボタン
+            clear_btn = gr.Button("🧹 キャンバスをクリア", variant="secondary")
+            with gr.Row():
+                invert_cb = gr.Checkbox(value=True, label="自動反転")
+                binarize_cb = gr.Checkbox(value=True, label="二値化")
+                crop_cb = gr.Checkbox(value=True, label="前景にトリミング")
+                scale20_cb = gr.Checkbox(value=True, label="20にスケーリングして中央に配置")
+                center_mass_cb = gr.Checkbox(value=True, label="重心を中央に配置")
+            predict_btn = gr.Button("識別", variant="primary", scale=1)
+            with gr.Row():
+                output = gr.Label(label="識別結果")
+                processed_img_out = gr.Image(type="pil", height=400, label="モデル入力 (28x28)", interactive=False)
+                
+
         with gr.Column(scale=1):
-            gr.Markdown("### 模型训练")
-            gr.Markdown("调整 epoch 数量并重新训练模型")
+            gr.Markdown("### モデル訓練")
+            gr.Markdown("エポック数を調整してモデルを再訓練")
             epochs_slider = gr.Slider(
                 minimum=1,
-                maximum=10,
+                maximum=5,
                 value=1,
                 step=1,
-                label="训练 Epoch 数",
-                info="训练轮数越多，可能精度越高但耗时越长"
+                label="訓練エポック数",
+                info="訓練回数が多いほど精度が向上する可能性がありますが、時間もかかります"
             )
-            train_btn = gr.Button("🔄 重新训练模型", variant="secondary")
-            train_output = gr.Textbox(label="训练状态", interactive=False)
-    
-    # 绑定事件（使用带选项的预测函数）
+            train_btn = gr.Button("🔄 モデルを再訓練", variant="secondary")
+            train_output = gr.Textbox(label="訓練状況", lines=6, interactive=False)
+            eva_model_btn = gr.Button("モデル評価", variant="primary", scale=1)
+            eva_output = gr.Textbox(label="評価結果", lines=2, interactive=False)
+
+    # ボタンのクリックイベントを設定
     predict_btn.click(
         fn=predict_with_options,
         inputs=[canvas, invert_cb, binarize_cb, crop_cb, scale20_cb, center_mass_cb],
         outputs=[output, processed_img_out]
     )
     train_btn.click(retrain_model, inputs=epochs_slider, outputs=train_output)
+    eva_model_btn.click(fn=evaluate_model, inputs=None, outputs=eva_output)
+    clear_btn.click(fn=lambda: None, inputs=None, outputs=canvas)
 
-    # 画笔大小变化时动态更新画布的 brush 设置
+    # ブラシサイズが変わったときにキャンバスのブラシ設定を動的に更新
     brush_size.change(fn=update_brush, inputs=brush_size, outputs=canvas)
 
-if __name__ == "__main__":
-    interface.launch(theme=gr.themes.Soft())
+interface.launch(theme=gr.themes.Soft())
